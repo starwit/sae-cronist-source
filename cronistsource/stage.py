@@ -5,14 +5,14 @@ import threading
 from prometheus_client import Counter, Histogram, start_http_server
 from visionlib.pipeline import ValkeyConsumer, ValkeyPublisher
 
-from .config import MyStageConfig
-from .mystage import MyStage
+from .config import CronistSourceConfig
+from .cronistsource import CronistSource
 
 logger = logging.getLogger(__name__)
 
-REDIS_PUBLISH_DURATION = Histogram('my_stage_redis_publish_duration', 'The time it takes to push a message onto the Redis stream',
+REDIS_PUBLISH_DURATION = Histogram('cronist_source_redis_publish_duration', 'The time it takes to push a message onto the Redis stream',
                                    buckets=(0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25))
-FRAME_COUNTER = Counter('my_stage_frame_counter', 'How many frames have been consumed from the Redis input stream')
+FRAME_COUNTER = Counter('cronist_source_frame_counter', 'How many frames have been consumed from the Redis input stream')
 
 def run_stage():
 
@@ -28,7 +28,7 @@ def run_stage():
     signal.signal(signal.SIGINT, sig_handler)
 
     # Load config from settings.yaml / env vars
-    CONFIG = MyStageConfig()
+    CONFIG = CronistSourceConfig()
 
     logger.setLevel(CONFIG.log_level.value)
 
@@ -38,7 +38,7 @@ def run_stage():
 
     logger.info(f'Starting geo mapper stage. Config: {CONFIG.model_dump_json(indent=2)}')
 
-    my_stage = MyStage(CONFIG)
+    cronist_source = CronistSource(CONFIG)
 
     consumer_ctx = ValkeyConsumer(CONFIG.redis.host, CONFIG.redis.port, 
                                  stream_keys=[f'{CONFIG.redis.input_stream_prefix}:{CONFIG.redis.stream_id}'])
@@ -56,7 +56,7 @@ def run_stage():
 
             FRAME_COUNTER.inc()
 
-            output_proto_data = my_stage.get(proto_data)
+            output_proto_data = cronist_source.get(proto_data)
 
             if output_proto_data is None:
                 continue

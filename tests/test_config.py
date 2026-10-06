@@ -1,12 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
-from mystage.config import MyStageConfig, RedisConfig
+from cronistsource.config import CronistSourceConfig, RedisConfig
 
 
 def test_incomplete_config():
     with pytest.raises(ValidationError):
-        MyStageConfig(
+        CronistSourceConfig(
             log_level="INFO",
             redis=RedisConfig(
                 host="localhost",
@@ -16,13 +16,13 @@ def test_incomplete_config():
         )
 
 def test_complete_config():
-    config = MyStageConfig(
+    config = CronistSourceConfig(
         log_level="INFO",
         redis=RedisConfig(
             host="localhost",
             port=6379,
             stream_id="stream1",
-            input_stream_prefix="mystage_input"
+            input_stream_prefix="cronistsource_input"
         ),
         prometheus_port=9000
     )
@@ -31,5 +31,5 @@ def test_complete_config():
     assert config.redis.host == "localhost"
     assert config.redis.port == 6379
     assert config.redis.stream_id == "stream1"
-    assert config.redis.input_stream_prefix == "mystage_input"
+    assert config.redis.input_stream_prefix == "cronistsource_input"
     assert config.prometheus_port == 9000

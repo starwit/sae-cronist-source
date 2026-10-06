@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  IMAGE_NAME: sae-my-stage
+  IMAGE_NAME: sae-cronist-source
   DOCKERHUB_USERNAME: starwit
   DOCKERHUB_ORG: starwitorg 
 

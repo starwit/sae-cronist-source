@@ -11,9 +11,9 @@ class RedisConfig(BaseModel):
     port: Annotated[int, Field(ge=1, le=65536)] = 6379
     stream_id: str
     input_stream_prefix: str
-    output_stream_prefix: str = 'mystage'
+    output_stream_prefix: str = 'cronistsource'
 
-class MyStageConfig(BaseSettings):
+class CronistSourceConfig(BaseSettings):
     log_level: LogLevel = LogLevel.WARNING
     redis: RedisConfig
     prometheus_port: Annotated[int, Field(ge=1024, le=65536)] = 8000
