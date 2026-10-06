@@ -1,0 +1,35 @@
+name: PR build
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  pr-build-poetry:
+    name: PR Build with Poetry
+    runs-on: [self-hosted, linux, X64]
+    container:
+        image: starwitorg/base-python-image:0.0.15
+        volumes:
+            - /home/githubrunner/.cache/pypoetry:/root/.cache/pypoetry
+    steps:
+      #----------------------------------------------
+      #       check-out repo and set-up python
+      #----------------------------------------------
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup
+        run: |
+          python --version
+          poetry --version
+
+      #----------------------------------------------
+      # install your root project, if required
+      #----------------------------------------------
+      - name: Install project
+        run: |
+          poetry config cache-dir /root/.cache/pypoetry
+          bash -c "make test"
+

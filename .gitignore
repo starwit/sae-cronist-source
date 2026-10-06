@@ -1,0 +1,8 @@
+__pycache__
+.venv
+.demo_detections
+.demo_output
+cache
+*.pt
+.vscode
+settings.yaml

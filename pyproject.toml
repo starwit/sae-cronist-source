@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "mystage"
+version = "0.1.0"
+description = ""
+authors = ["flonix8 <flstanek@googlemail.com>"]
+license = "AGPLv3"
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+pydantic = "2.13.4"
+visionapi = { git = "https://github.com/starwit/vision-api.git", subdirectory = "python/visionapi", tag = "3.5.3" }
+visionlib = { git = "https://github.com/starwit/vision-lib.git", subdirectory = "python", tag = "1.0.1" }
+pydantic-settings = "2.14.1"
+prometheus-client = "0.25.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "9.1.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
