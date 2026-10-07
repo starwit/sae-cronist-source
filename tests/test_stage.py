@@ -1,62 +1,37 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
-import pytest
-from visionapi.common_pb2 import MessageType
-from visionapi.sae_pb2 import SaeMessage
-
-from cronistsource.config import CronistSourceConfig, RedisConfig
-from cronistsource.stage import run_stage
+from cronistsource.cronistclient import SaeDesiredState, SaeObservedState
+from cronistsource.stage import sync
 
 
-@pytest.fixture(autouse=True)
-def disable_prometheus():
-    # We don't want to start the Prometheus server during tests
-    with patch('cronistsource.stage.start_http_server'):
-        yield
+def test_sync_reconciles_and_reports():
+    client = MagicMock()
+    reconciler = MagicMock()
+    desired = SaeDesiredState(sae_id='sae-1', generation=1)
+    observed = SaeObservedState(sae_id='sae-1', observed_generation=1)
+    client.get_desired_state.return_value = desired
+    reconciler.observed_state.return_value = observed
 
-@pytest.fixture
-def set_config():
-    with patch('cronistsource.stage.CronistSourceConfig') as mock_config:
-        def _make_mock_config(stream_id: str, input_stream_prefix: str):
-            mock_config.return_value = CronistSourceConfig(
-                log_level='WARNING',
-                redis=RedisConfig(
-                    stream_id=stream_id,
-                    input_stream_prefix=input_stream_prefix
-                )
-            )
-        yield _make_mock_config
+    sync(client, reconciler)
 
-@pytest.fixture
-def redis_publisher_mock():
-    with patch('cronistsource.stage.ValkeyPublisher') as mock_publisher:
-        yield mock_publisher.return_value.__enter__.return_value
+    reconciler.reconcile.assert_called_once_with(desired)
+    client.put_observed_state.assert_called_once_with(observed)
 
-@pytest.fixture
-def inject_consumer_messages():
-    with patch('cronistsource.stage.ValkeyConsumer') as mock_consumer:
-        def _inject_messages(messages):
-            mock_consumer.return_value.__enter__.return_value.return_value.__iter__.return_value = iter(messages)
-        yield _inject_messages
+def test_sync_reports_even_if_desired_state_is_unavailable():
+    client = MagicMock()
+    reconciler = MagicMock()
+    client.get_desired_state.side_effect = ConnectionError('cronist down')
+    reconciler.observed_state.return_value = SaeObservedState(sae_id='sae-1')
 
-def test_example(set_config, redis_publisher_mock, inject_consumer_messages):
-    set_config(stream_id='test_stream', input_stream_prefix='test_prefix')
-    
-    inject_consumer_messages([
-        ('test_prefix:test_stream', _make_sae_msg_bytes(1)),
-        ('test_prefix:test_stream', _make_sae_msg_bytes(2)),
-    ])
-    
-    # Run the stage (this will process the injected messages)
-    run_stage()
-    
-    # Verify that messages were published
-    assert redis_publisher_mock.call_count == 2
-    assert redis_publisher_mock.call_args_list[0].args == ('cronistsource:test_stream', _make_sae_msg_bytes(1))
-    assert redis_publisher_mock.call_args_list[1].args == ('cronistsource:test_stream', _make_sae_msg_bytes(2))
+    sync(client, reconciler)
 
-def _make_sae_msg_bytes(timestamp: int) -> bytes:
-    sae_msg = SaeMessage()
-    sae_msg.frame.timestamp_utc_ms = timestamp
-    sae_msg.type = MessageType.SAE
-    return sae_msg.SerializeToString()
+    reconciler.reconcile.assert_not_called()
+    client.put_observed_state.assert_called_once()
+
+def test_sync_survives_report_failure():
+    client = MagicMock()
+    reconciler = MagicMock()
+    reconciler.observed_state.return_value = SaeObservedState(sae_id='sae-1')
+    client.put_observed_state.side_effect = ConnectionError('cronist down')
+
+    sync(client, reconciler)
