@@ -2,8 +2,8 @@ import pytest
 
 def test_cronistsource_import():
     try:
-        from cronistsource.cronistsource import CronistSource
+        from cronistsource.stage import run_stage
     except ImportError as e:
-        pytest.fail(f"Failed to import CronistSource: {e}")
+        pytest.fail(f"Failed to import run_stage: {e}")
 
-    assert CronistSource is not None, "CronistSource should be imported successfully"
+    assert run_stage is not None, "run_stage should be imported successfully"

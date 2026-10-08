@@ -1,6 +1,6 @@
 .PHONY: install build-deb clean
 
-export PACKAGE_NAME=mystage
+export PACKAGE_NAME=cronistsource
 
 install:
 	poetry install

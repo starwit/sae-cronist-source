@@ -2,17 +2,22 @@ import logging
 import signal
 import threading
 
-from prometheus_client import Counter, Histogram, start_http_server
-from visionlib.pipeline import ValkeyConsumer, ValkeyPublisher
+from prometheus_client import Counter, Gauge, start_http_server
 
 from .config import CronistSourceConfig
-from .cronistsource import CronistSource
+from .cronistclient import CronistClient
+from .playback import PlaybackTask
+from .reconciler import Reconciler
 
+logging.basicConfig(format='%(asctime)s %(name)-15s %(levelname)-8s %(processName)-10s %(message)s')
 logger = logging.getLogger(__name__)
 
-REDIS_PUBLISH_DURATION = Histogram('cronist_source_redis_publish_duration', 'The time it takes to push a message onto the Redis stream',
-                                   buckets=(0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25))
-FRAME_COUNTER = Counter('cronist_source_frame_counter', 'How many frames have been consumed from the Redis input stream')
+SYNC_ERRORS = Counter('cronist_source_sync_errors', 'Failed requests to cronist', ['operation'])
+OBSERVED_GENERATION = Gauge('cronist_source_observed_generation', 'Generation of the desired state last reconciled')
+
+# How long to wait for a running task on shutdown before giving up on it
+SHUTDOWN_TIMEOUT_S = 10.0
+
 
 def run_stage():
 
@@ -30,37 +35,42 @@ def run_stage():
     # Load config from settings.yaml / env vars
     CONFIG = CronistSourceConfig()
 
-    logger.setLevel(CONFIG.log_level.value)
+    logging.getLogger('cronistsource').setLevel(CONFIG.log_level.value)
 
     logger.info(f'Starting prometheus metrics endpoint on port {CONFIG.prometheus_port}')
 
     start_http_server(CONFIG.prometheus_port)
 
-    logger.info(f'Starting geo mapper stage. Config: {CONFIG.model_dump_json(indent=2)}')
+    logger.info(f'Starting cronist source stage. Config: {CONFIG.model_dump_json(indent=2, exclude={"cronist": {"auth": {"client_secret"}}})}')
 
-    cronist_source = CronistSource(CONFIG)
+    client = CronistClient(CONFIG.cronist, CONFIG.sae_id)
+    reconciler = Reconciler(CONFIG.sae_id, lambda desired: PlaybackTask(desired, CONFIG))
+    logger.info(f'Reporting as SAE {CONFIG.sae_id} with instance id {reconciler.instance_id}')
 
-    consumer_ctx = ValkeyConsumer(CONFIG.redis.host, CONFIG.redis.port, 
-                                 stream_keys=[f'{CONFIG.redis.input_stream_prefix}:{CONFIG.redis.stream_id}'])
-    publish_ctx = ValkeyPublisher(CONFIG.redis.host, CONFIG.redis.port)
-    
-    with consumer_ctx as iter_messages, publish_ctx as publish:
-        for stream_key, proto_data in iter_messages():
-            if stop_event.is_set():
-                break
+    try:
+        while not stop_event.is_set():
+            sync(client, reconciler)
+            stop_event.wait(CONFIG.cronist.sync_interval)
+    finally:
+        reconciler.shutdown(SHUTDOWN_TIMEOUT_S)
 
-            if stream_key is None:
-                continue
 
-            stream_id = stream_key.split(':')[1]
+def sync(client: CronistClient, reconciler: Reconciler) -> None:
+    '''One reconciliation round: fetch the desired state, act on it, report what we observe.
 
-            FRAME_COUNTER.inc()
+    Failures only skip the affected half of the round. The observed state is reported even if the
+    desired state could not be fetched, so cronist keeps seeing the SAE and its progress.
+    '''
+    try:
+        reconciler.reconcile(client.get_desired_state())
+    except Exception as e:
+        SYNC_ERRORS.labels(operation='get_desired_state').inc()
+        logger.warning('Could not reconcile desired state: %s', e)
 
-            output_proto_data = cronist_source.get(proto_data)
-
-            if output_proto_data is None:
-                continue
-            
-            with REDIS_PUBLISH_DURATION.time():
-                publish(f'{CONFIG.redis.output_stream_prefix}:{stream_id}', output_proto_data)
-            
+    observed = reconciler.observed_state()
+    OBSERVED_GENERATION.set(observed.observed_generation)
+    try:
+        client.put_observed_state(observed)
+    except Exception as e:
+        SYNC_ERRORS.labels(operation='put_observed_state').inc()
+        logger.warning('Could not report observed state: %s', e)
