@@ -12,6 +12,7 @@ class FakeTask:
         self.video_id = desired.video_id
         self.status = PlaybackStatus.PLAYING
         self.processed_frames = 0
+        self.total_frames = None
         self.message = None
         self.started = False
         self.stop_requested = False
@@ -58,6 +59,7 @@ def test_initial_state_is_idle(reconciler):
     assert observed.playback_status == PlaybackStatus.IDLE
     assert observed.task_id is None
     assert observed.processed_frames is None
+    assert observed.total_frames is None
 
 def test_idle_desired_state_adopts_generation(reconciler, tasks):
     reconciler.reconcile(_desired(5))
@@ -80,8 +82,10 @@ def test_new_task_is_started(reconciler, tasks):
 def test_progress_is_reported(reconciler, tasks):
     reconciler.reconcile(_desired(1, 't1'))
     tasks[0].processed_frames = 42
+    tasks[0].total_frames = 100
 
     assert reconciler.observed_state().processed_frames == 42
+    assert reconciler.observed_state().total_frames == 100
 
 def test_generation_bump_with_same_task_does_not_restart(reconciler, tasks):
     reconciler.reconcile(_desired(1, 't1'))

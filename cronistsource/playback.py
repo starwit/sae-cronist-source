@@ -14,7 +14,7 @@ from visionlib.pipeline import ValkeyPublisher
 from .config import CronistSourceConfig, RedisConfig
 from .cronistclient import PlaybackStatus, SaeDesiredState
 from .encoding import build_encoder
-from .frames import iter_frames
+from .frames import check_frame_timing, iter_frames
 from .saemessage import to_sae_message
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,8 @@ class PlaybackTask(threading.Thread):
         self.video_id = desired.video_id
         self.status = PlaybackStatus.PLAYING
         self.processed_frames = 0
+        # Frames this task will publish, known once the downloaded video has been checked
+        self.total_frames: Optional[int] = None
         self.message: Optional[str] = None
 
         self._video_url = desired.video_url
@@ -86,12 +88,16 @@ class PlaybackTask(threading.Thread):
             if not self._video_url:
                 raise ValueError('videoUrl missing')
             if self._video_start is None:
-                # Guessing would produce plausible-looking but wrong timestamps downstream.
+                # Never guess frame times: they would look plausible downstream but be wrong.
                 raise ValueError('videoStart missing')
             start_epoch_ms = round(self._video_start.timestamp() * 1000)
 
             self.message = 'Downloading video'
             video_path = self._download()
+
+            # Reject videos without usable frame times before feeding any of their frames downstream
+            self.message = 'Checking video'
+            self.total_frames = check_frame_timing(video_path, self._config.source.target_fps)
 
             self.message = None
             self._publish_frames(video_path, start_epoch_ms)

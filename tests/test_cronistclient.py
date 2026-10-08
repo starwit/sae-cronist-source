@@ -60,7 +60,7 @@ def test_put_observed_state_sends_camel_case_with_nulls(session):
     assert session.request.call_args.args == ('PUT', 'http://localhost:8081/cronist/api/sae/sae-1/observed-state')
     assert session.request.call_args.kwargs['json'] == {
         'saeId': 'sae-1', 'observedGeneration': 2, 'taskId': None, 'videoId': None,
-        'playbackStatus': 'IDLE', 'processedFrames': None, 'message': None,
+        'playbackStatus': 'IDLE', 'processedFrames': None, 'totalFrames': None, 'message': None,
     }
 
 def test_http_error_raises(session):

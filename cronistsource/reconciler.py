@@ -53,6 +53,7 @@ class Reconciler:
             state.video_id = task.video_id
             state.playback_status = task.status
             state.processed_frames = task.processed_frames
+            state.total_frames = task.total_frames
             state.message = task.message
         else:
             state.playback_status = PlaybackStatus.IDLE

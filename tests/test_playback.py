@@ -61,6 +61,7 @@ def test_plays_whole_video(config, publish, reset_stream, download, video_clip, 
 
     assert task.status == PlaybackStatus.FINISHED
     assert task.processed_frames == CLIP_FRAMES
+    assert task.total_frames == CLIP_FRAMES
     assert task.message is None
     assert download.mock.call_args.args == ('http://s3/video.mp4',)
     reset_stream.assert_called_once_with(config.redis, 'cronistsource:stream1')
@@ -96,6 +97,19 @@ def test_http_error_fails(config, publish, download, tmp_path):
     assert task.status == PlaybackStatus.FAILED
     assert '403' in task.message
     publish.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+def test_video_without_frame_times_fails_before_publishing(config, publish, reset_stream, download, raw_video_clip, tmp_path):
+    download(raw_video_clip.read_bytes())
+    task = PlaybackTask(_desired(), config)
+
+    task.run()
+
+    assert task.status == PlaybackStatus.FAILED
+    assert 'carries no frame timestamps' in task.message
+    assert task.total_frames is None
+    publish.assert_not_called()
+    reset_stream.assert_not_called()
     assert list(tmp_path.iterdir()) == []
 
 def test_corrupt_video_fails(config, publish, reset_stream, download, tmp_path):

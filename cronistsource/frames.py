@@ -6,19 +6,23 @@ from typing import Iterator, Optional
 
 import av
 import numpy as np
+from av.format import Flags
 from prometheus_client import Counter, Histogram
 
 logger = logging.getLogger(__name__)
 
 DECODE_DURATION = Histogram('cronist_source_decode_duration_seconds', 'The time it takes to decode and colour-convert one frame',
                             buckets=(0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5))
-NON_MONOTONIC_TIMESTAMPS = Counter('cronist_source_non_monotonic_timestamps',
-                                   'Frames whose derived timestamp was not greater than the previous one')
 FRAMES_SKIPPED = Counter('cronist_source_frames_skipped',
                          'Decoded frames discarded to meet the configured target frame rate')
 
-# Used for frames without a PTS when the container does not state a frame rate either.
-FALLBACK_FPS = 25.0
+
+class FrameTimingError(ValueError):
+    '''The video does not carry enough timing information to derive the recording time of every frame.
+
+    Frame times are never guessed (e.g. from an assumed frame rate): downstream speed and count
+    calculations depend on them, and plausible-looking but wrong times would silently corrupt them.
+    '''
 
 
 @dataclass
@@ -37,6 +41,61 @@ def _to_bgr(frame: av.VideoFrame, scale_width: int) -> np.ndarray:
     else:
         frame = frame.reformat(format='bgr24')
     return frame.to_ndarray()
+
+
+def _check_container_timing(container: av.container.InputContainer) -> av.VideoStream:
+    if not container.streams.video:
+        raise FrameTimingError('Video contains no video stream')
+
+    if Flags.no_timestamps in Flags(container.format.flags):
+        # Raw elementary streams (e.g. .h264, .m4v). ffmpeg would make up timestamps from an assumed
+        # frame rate, which is exactly the kind of guess we must not feed downstream.
+        raise FrameTimingError(f'Video format "{container.format.name}" carries no frame timestamps; '
+                               'use a container format such as MP4, MKV or MPEG-TS')
+
+    stream = container.streams.video[0]
+    if stream.time_base is None:
+        raise FrameTimingError('Video stream has no time base, cannot derive frame times')
+    return stream
+
+
+def check_frame_timing(path: Path, target_fps: Optional[float] = None) -> int:
+    '''Verify, without decoding, that every frame of the video has a usable presentation timestamp.
+
+    Only demuxes, which is cheap compared to decoding, so a broken video is rejected before any of
+    its frames are fed downstream. `iter_frames` checks the decoded frames again.
+
+    Returns how many frames `iter_frames` will yield with the same `target_fps`. This is exact for
+    well-formed videos (one packet per frame); only a decoder dropping corrupt frames yields fewer.
+    '''
+    with av.open(str(path)) as container:
+        stream = _check_container_timing(container)
+
+        pts_values = []
+        for packet in container.demux(stream):
+            if packet.size == 0:
+                continue    # flush packet at the end of the stream
+            if packet.pts is None:
+                raise FrameTimingError(f'Video packet {len(pts_values)} has no presentation timestamp (PTS), '
+                                       'cannot derive its recording time')
+            pts_values.append(packet.pts)
+
+    if not pts_values:
+        raise FrameTimingError('Video stream contains no frames')
+
+    # Packets come in decode order, which differs from presentation order with B-frames.
+    pts_values.sort()
+    for previous, current in zip(pts_values, pts_values[1:]):
+        if current == previous:
+            raise FrameTimingError(f'Several video frames share the presentation timestamp '
+                                   f'{float(current * stream.time_base):.3f}s, cannot derive distinct frame times')
+
+    # Same timestamp derivation and frame selection as iter_frames. The selection only depends on
+    # timestamp differences, so the actual start time does not matter here.
+    rate_limiter = _FrameRateLimiter(target_fps)
+    first_pts_s = float(pts_values[0] * stream.time_base)
+    return sum(1 for pts in pts_values
+               if rate_limiter.accept(round((float(pts * stream.time_base) - first_pts_s) * 1000)))
 
 
 class _FrameRateLimiter:
@@ -81,21 +140,21 @@ def iter_frames(path: Path, start_epoch_ms: int, scale_width: int = 0,
 
     `start_epoch_ms` is the recording time of the first frame. Timestamps are derived from the PTS
     relative to the first decoded frame, so a stream whose PTS does not start at 0 still starts
-    exactly at `start_epoch_ms`.
+    exactly at `start_epoch_ms`. Raises FrameTimingError if a frame has no PTS or its PTS does not
+    increase; run `check_frame_timing` first to reject such videos before publishing anything.
 
     `target_fps` thins the output down to roughly that many frames per second. Every frame is still
     decoded -- inter-frame compression means a frame cannot be reconstructed without its
     predecessors -- but discarded ones skip colour conversion, which is the expensive part.
     '''
-    last_timestamp = -1
     rate_limiter = _FrameRateLimiter(target_fps)
 
     with av.open(str(path)) as container:
-        stream = container.streams.video[0]
+        stream = _check_container_timing(container)
         stream.thread_type = 'AUTO'     # let libavcodec spread decoding across cores
         time_base = stream.time_base
-        fallback_step_s = 1.0 / float(stream.average_rate or FALLBACK_FPS)
         first_pts_s = None
+        last_pts_s = None
 
         decoded = 0
         kept = 0
@@ -106,21 +165,22 @@ def iter_frames(path: Path, start_epoch_ms: int, scale_width: int = 0,
             decoded = frame_index + 1
 
             with DECODE_DURATION.time():
-                pts_s = float(frame.pts * time_base) if frame.pts is not None else frame_index * fallback_step_s
+                if frame.pts is None:
+                    raise FrameTimingError(f'Frame {frame_index} has no presentation timestamp (PTS), '
+                                           'cannot derive its recording time')
+                pts_s = float(frame.pts * time_base)
+                if last_pts_s is not None and pts_s <= last_pts_s:
+                    raise FrameTimingError(f'Frame {frame_index} has PTS {pts_s:.3f}s, which is not after the '
+                                           f'previous frame ({last_pts_s:.3f}s), cannot derive its recording time')
                 if first_pts_s is None:
                     first_pts_s = pts_s
+                last_pts_s = pts_s
 
                 timestamp = start_epoch_ms + round((pts_s - first_pts_s) * 1000)
-                if timestamp <= last_timestamp:
-                    # Broken or variable-rate PTS. Nudge forward so the stream stays ordered.
-                    NON_MONOTONIC_TIMESTAMPS.inc()
-                    timestamp = last_timestamp + 1
-
                 if not rate_limiter.accept(timestamp):
                     FRAMES_SKIPPED.inc()
                     continue
 
-                last_timestamp = timestamp
                 image_bgr = _to_bgr(frame, scale_width)
 
             kept += 1

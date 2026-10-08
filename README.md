@@ -12,8 +12,14 @@ For each task the stage:
 1. downloads the video from `videoUrl`, e.g. a presigned S3 URL, to a temp file. Downloading first avoids problems with expiring URLs while playback is stalled by backpressure.
 2. trims the output stream, so frames left over from a previous task are not fed downstream
 3. decodes the video with PyAV and publishes one JPEG `SaeMessage` per frame to `<output_stream_prefix>:<stream_id>`, with backpressure enabled
-4. derives frame timestamps from `videoStart` (the recording time of the first frame) plus the frame's PTS. A task without `videoStart` fails.
-5. reports `PLAYING` with `processedFrames` while running, then `FINISHED` or `FAILED` (with `message`) until cronist assigns something else
+4. derives frame timestamps from `videoStart` (the recording time of the first frame) plus the frame's PTS. Frame times are never guessed. The task fails with a clear message if:
+   - `videoStart` is missing
+   - the format carries no timestamps (raw `.h264`/`.m4v` streams)
+   - a frame has no PTS
+   - PTS values repeat or go backwards
+
+   A demux-only check runs before anything is published, so such videos never feed partial data downstream.
+5. reports `PLAYING` with `processedFrames` and `totalFrames` while running. `totalFrames` is the exact number of frames that will be published (counted while checking the video, `target_fps` included), and is `null` until that check is done., then `FINISHED` or `FAILED` (with `message`) until cronist assigns something else
 
 ## Configuration
 See [settings.template.yaml](settings.template.yaml). Settings can also be given as env vars, e.g. `CRONIST__BASE_URL`.

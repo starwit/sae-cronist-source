@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 TOKEN_EXPIRY_MARGIN_S = 30.0
 
 
-class _CamelModel(BaseModel):
+class _CamelCaseModel(BaseModel):
+    '''Base for cronist API models: snake_case fields in Python, camelCase keys in JSON (e.g. task_id <-> taskId).'''
+
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
@@ -28,7 +30,7 @@ class PlaybackStatus(str, Enum):
     FAILED = 'FAILED'
 
 
-class SaeDesiredState(_CamelModel):
+class SaeDesiredState(_CamelCaseModel):
     sae_id: str
     generation: int = 0
     # The only field that signals idle. The other task fields are not relevant if it is None.
@@ -38,13 +40,14 @@ class SaeDesiredState(_CamelModel):
     video_start: Optional[AwareDatetime] = None
 
 
-class SaeObservedState(_CamelModel):
+class SaeObservedState(_CamelCaseModel):
     sae_id: str
     observed_generation: int = 0
     task_id: Optional[str] = None
     video_id: Optional[str] = None
     playback_status: PlaybackStatus = PlaybackStatus.IDLE
     processed_frames: Optional[int] = None
+    total_frames: Optional[int] = None
     message: Optional[str] = None
 
 

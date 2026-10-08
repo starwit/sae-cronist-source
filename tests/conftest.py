@@ -20,8 +20,15 @@ CLIP_HEIGHT = 48
 @pytest.fixture(scope='session')
 def video_clip(tmp_path_factory) -> Path:
     '''A one-second 25 fps clip, small enough to decode instantly.'''
-    path = tmp_path_factory.mktemp('video') / 'clip.mp4'
-    with av.open(str(path), 'w') as container:
+    return _write_clip(tmp_path_factory.mktemp('video') / 'clip.mp4')
+
+@pytest.fixture(scope='session')
+def raw_video_clip(tmp_path_factory) -> Path:
+    '''The same clip as a raw MPEG-4 elementary stream, which carries no frame timestamps.'''
+    return _write_clip(tmp_path_factory.mktemp('video') / 'clip.m4v', format='m4v')
+
+def _write_clip(path: Path, format: str = None) -> Path:
+    with av.open(str(path), 'w', format=format) as container:
         stream = container.add_stream('mpeg4', rate=CLIP_FPS)
         stream.width = CLIP_WIDTH
         stream.height = CLIP_HEIGHT
