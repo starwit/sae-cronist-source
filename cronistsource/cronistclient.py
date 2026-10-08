@@ -32,6 +32,9 @@ class PlaybackStatus(str, Enum):
 
 class SaeDesiredState(_CamelCaseModel):
     sae_id: str
+    # Instance the task is bound to. A task bound to another instance (e.g. the one before a restart)
+    # must not be processed. None if task_id is None.
+    instance_id: Optional[str] = None
     generation: int = 0
     # The only field that signals idle. The other task fields are not relevant if it is None.
     task_id: Optional[str] = None
@@ -42,6 +45,7 @@ class SaeDesiredState(_CamelCaseModel):
 
 class SaeObservedState(_CamelCaseModel):
     sae_id: str
+    instance_id: str
     observed_generation: int = 0
     task_id: Optional[str] = None
     video_id: Optional[str] = None

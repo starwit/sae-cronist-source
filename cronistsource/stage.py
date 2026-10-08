@@ -45,6 +45,7 @@ def run_stage():
 
     client = CronistClient(CONFIG.cronist, CONFIG.sae_id)
     reconciler = Reconciler(CONFIG.sae_id, lambda desired: PlaybackTask(desired, CONFIG))
+    logger.info(f'Reporting as SAE {CONFIG.sae_id} with instance id {reconciler.instance_id}')
 
     try:
         while not stop_event.is_set():

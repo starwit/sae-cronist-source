@@ -1,4 +1,7 @@
+import logging
 from datetime import datetime, timezone
+from unittest.mock import patch
+from uuid import uuid4 as real_uuid4
 
 import pytest
 
@@ -44,17 +47,27 @@ def reconciler(tasks):
         return task
     return Reconciler('sae-1', factory)
 
-def _desired(generation, task_id=None):
+THIS_INSTANCE = 'this-instance'
+OTHER_INSTANCE = 'other-instance'
+
+@pytest.fixture(autouse=True)
+def fixed_instance_id():
+    with patch('cronistsource.reconciler.uuid.uuid4', return_value=THIS_INSTANCE):
+        yield
+
+def _desired(generation, task_id=None, instance_id=THIS_INSTANCE):
     if task_id is None:
         return SaeDesiredState(sae_id='sae-1', generation=generation)
-    return SaeDesiredState(sae_id='sae-1', generation=generation, task_id=task_id, video_id=f'video-{task_id}',
-                           video_url='http://s3/video.mp4', video_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    return SaeDesiredState(sae_id='sae-1', instance_id=instance_id, generation=generation, task_id=task_id,
+                           video_id=f'video-{task_id}', video_url='http://s3/video.mp4',
+                           video_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
 
 
 def test_initial_state_is_idle(reconciler):
     observed = reconciler.observed_state()
 
     assert observed.sae_id == 'sae-1'
+    assert observed.instance_id == THIS_INSTANCE
     assert observed.observed_generation == 0
     assert observed.playback_status == PlaybackStatus.IDLE
     assert observed.task_id is None
@@ -165,3 +178,61 @@ def test_shutdown_stops_running_task(reconciler, tasks):
     reconciler.shutdown(timeout=1)
 
     assert tasks[0].stop_requested
+
+
+def test_instance_id_is_generated_per_reconciler():
+    # Undo the fixed id from the autouse fixture
+    with patch('cronistsource.reconciler.uuid.uuid4', real_uuid4):
+        first = Reconciler('sae-1', FakeTask)
+        second = Reconciler('sae-1', FakeTask)
+
+    assert first.instance_id and second.instance_id
+    assert first.instance_id != second.instance_id
+
+def test_instance_id_is_included_in_every_report(reconciler, tasks):
+    reports = [reconciler.observed_state()]
+    reconciler.reconcile(_desired(1, 't1'))
+    reports.append(reconciler.observed_state())
+    tasks[0].status = PlaybackStatus.FINISHED
+    reports.append(reconciler.observed_state())
+    reconciler.reconcile(_desired(2, 't2', instance_id=OTHER_INSTANCE))
+    reports.append(reconciler.observed_state())
+
+    assert all(report.instance_id == THIS_INSTANCE for report in reports)
+    assert all(report.model_dump(by_alias=True)['instanceId'] == THIS_INSTANCE for report in reports)
+
+def test_task_bound_to_other_instance_is_not_started(reconciler, tasks, caplog):
+    with caplog.at_level(logging.WARNING, logger='cronistsource.reconciler'):
+        reconciler.reconcile(_desired(4, 't1', instance_id=OTHER_INSTANCE))
+        reconciler.reconcile(_desired(4, 't1', instance_id=OTHER_INSTANCE))
+
+    assert tasks == []
+    observed = reconciler.observed_state()
+    assert observed.playback_status == PlaybackStatus.IDLE
+    assert observed.task_id is None
+    assert observed.observed_generation == 4
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert 't1' in warnings[0].getMessage() and OTHER_INSTANCE in warnings[0].getMessage()
+
+def test_task_rebound_to_this_instance_is_started(reconciler, tasks):
+    reconciler.reconcile(_desired(1, 't1', instance_id=OTHER_INSTANCE))
+    reconciler.reconcile(_desired(2, 't2'))
+
+    assert len(tasks) == 1 and tasks[0].task_id == 't2' and tasks[0].started
+    assert reconciler.observed_state().task_id == 't2'
+
+def test_instance_id_change_stops_playing_task(reconciler, tasks):
+    reconciler.reconcile(_desired(1, 't1'))
+
+    reconciler.reconcile(_desired(2, 't1', instance_id=OTHER_INSTANCE))
+
+    assert tasks[0].stop_requested
+    tasks[0].alive = False
+    reconciler.reconcile(_desired(2, 't1', instance_id=OTHER_INSTANCE))
+
+    assert len(tasks) == 1
+    observed = reconciler.observed_state()
+    assert observed.playback_status == PlaybackStatus.IDLE
+    assert observed.task_id is None
+    assert observed.observed_generation == 2

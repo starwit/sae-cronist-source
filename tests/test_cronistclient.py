@@ -25,7 +25,7 @@ def session():
 
 def test_get_desired_state(session):
     session.request.return_value = _response(json={
-        'saeId': 'sae-1', 'generation': 3, 'taskId': 't1', 'videoId': 'v1',
+        'saeId': 'sae-1', 'instanceId': 'instance-1', 'generation': 3, 'taskId': 't1', 'videoId': 'v1',
         'videoUrl': 'http://s3/video.mp4', 'videoStart': '2026-01-01T12:00:00Z',
     })
     client = CronistClient(CronistConfig(base_url='http://cronist/cronist/'), 'sae-1', session=session)
@@ -34,6 +34,7 @@ def test_get_desired_state(session):
 
     assert session.request.call_args.args == ('GET', 'http://cronist/cronist/api/sae/sae-1/desired-state')
     assert 'Authorization' not in session.request.call_args.kwargs['headers']
+    assert desired.instance_id == 'instance-1'
     assert desired.generation == 3
     assert desired.task_id == 't1'
     assert desired.video_url == 'http://s3/video.mp4'
@@ -41,25 +42,26 @@ def test_get_desired_state(session):
 
 def test_get_idle_desired_state(session):
     session.request.return_value = _response(json={
-        'saeId': 'sae-1', 'generation': 0, 'taskId': None, 'videoId': None, 'videoUrl': None, 'videoStart': None,
+        'saeId': 'sae-1', 'instanceId': None, 'generation': 0, 'taskId': None, 'videoId': None, 'videoUrl': None, 'videoStart': None,
     })
     client = CronistClient(CronistConfig(), 'sae-1', session=session)
 
     desired = client.get_desired_state()
 
     assert desired.task_id is None
+    assert desired.instance_id is None
     assert desired.video_start is None
 
 def test_put_observed_state_sends_camel_case_with_nulls(session):
     session.request.return_value = _response()
     client = CronistClient(CronistConfig(), 'sae-1', session=session)
 
-    client.put_observed_state(SaeObservedState(sae_id='sae-1', observed_generation=2,
+    client.put_observed_state(SaeObservedState(sae_id='sae-1', instance_id='instance-1', observed_generation=2,
                                                playback_status=PlaybackStatus.IDLE))
 
     assert session.request.call_args.args == ('PUT', 'http://localhost:8081/cronist/api/sae/sae-1/observed-state')
     assert session.request.call_args.kwargs['json'] == {
-        'saeId': 'sae-1', 'observedGeneration': 2, 'taskId': None, 'videoId': None,
+        'saeId': 'sae-1', 'instanceId': 'instance-1', 'observedGeneration': 2, 'taskId': None, 'videoId': None,
         'playbackStatus': 'IDLE', 'processedFrames': None, 'totalFrames': None, 'message': None,
     }
 
@@ -78,8 +80,8 @@ def test_bearer_token_is_fetched_and_cached(session):
     session.request.return_value = _response()
     client = CronistClient(_auth_config(), 'sae-1', session=session)
 
-    client.put_observed_state(SaeObservedState(sae_id='sae-1'))
-    client.put_observed_state(SaeObservedState(sae_id='sae-1'))
+    client.put_observed_state(SaeObservedState(sae_id='sae-1', instance_id='instance-1'))
+    client.put_observed_state(SaeObservedState(sae_id='sae-1', instance_id='instance-1'))
 
     assert session.post.call_count == 1
     assert session.post.call_args.kwargs['data']['grant_type'] == 'client_credentials'
@@ -91,8 +93,8 @@ def test_expired_token_is_refreshed(session):
     session.request.return_value = _response()
     client = CronistClient(_auth_config(), 'sae-1', session=session)
 
-    client.put_observed_state(SaeObservedState(sae_id='sae-1'))
-    client.put_observed_state(SaeObservedState(sae_id='sae-1'))
+    client.put_observed_state(SaeObservedState(sae_id='sae-1', instance_id='instance-1'))
+    client.put_observed_state(SaeObservedState(sae_id='sae-1', instance_id='instance-1'))
 
     assert session.post.call_count == 2
     assert session.request.call_args.kwargs['headers']['Authorization'] == 'Bearer token-2'
@@ -102,7 +104,7 @@ def test_unauthorized_retries_once_with_fresh_token(session):
     session.request.side_effect = [_response(status_code=401), _response()]
     client = CronistClient(_auth_config(), 'sae-1', session=session)
 
-    client.put_observed_state(SaeObservedState(sae_id='sae-1'))
+    client.put_observed_state(SaeObservedState(sae_id='sae-1', instance_id='instance-1'))
 
     assert session.request.call_count == 2
     assert session.request.call_args.kwargs['headers']['Authorization'] == 'Bearer token-2'

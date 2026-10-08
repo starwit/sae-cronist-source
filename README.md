@@ -6,7 +6,9 @@ Cronist owns the state and this stage reconciles against it, similar to a Kubern
 1. polls `GET /api/sae/{saeId}/desired-state` and reconciles it
 2. reports `PUT /api/sae/{saeId}/observed-state`
 
-A changed `taskId` stops the current task and starts a new one, and a `null` `taskId` means idle. `observedGeneration` is only advanced once the desired state has actually been reconciled, i.e. after a previous task has really stopped.
+A changed `taskId` stops the current task and starts a new one, and a `null` `taskId` means idle.
+
+On every start the stage generates a random `instanceId`, kept in memory only, and reports it with each observed state. Cronist binds tasks to the instance they were assigned to. A task bound to another instance, e.g. the one before a crash, is treated as idle and never resumed, because its playback state is lost. Cronist marks it as failed. `observedGeneration` is only advanced once the desired state has actually been reconciled, i.e. after a previous task has really stopped.
 
 For each task the stage:
 1. downloads the video from `videoUrl`, e.g. a presigned S3 URL, to a temp file. Downloading first avoids problems with expiring URLs while playback is stalled by backpressure.
