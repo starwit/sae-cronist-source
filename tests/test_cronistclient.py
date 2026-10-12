@@ -2,18 +2,19 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from cronistsource.config import AuthConfig, CronistConfig
-from cronistsource.cronistclient import (CronistClient, PlaybackStatus,
-                                         SaeObservedState)
+from cronistsource.cronistclient import (CronistClient, CronistRequestError,
+                                         PlaybackStatus, SaeObservedState,
+                                         TokenRequestError)
 
 
 def _response(status_code=200, json=None):
     response = MagicMock()
     response.status_code = status_code
+    response.reason = 'Reason'
     response.json.return_value = json
-    if status_code >= 400:
-        response.raise_for_status.side_effect = Exception(f'HTTP {status_code}')
     return response
 
 def _token_response(token, expires_in=300):
@@ -69,7 +70,7 @@ def test_http_error_raises(session):
     session.request.return_value = _response(status_code=500)
     client = CronistClient(CronistConfig(), 'sae-1', session=session)
 
-    with pytest.raises(Exception):
+    with pytest.raises(CronistRequestError, match='cronist request GET .*/desired-state failed with HTTP 500'):
         client.get_desired_state()
 
 def _auth_config():
@@ -108,3 +109,55 @@ def test_unauthorized_retries_once_with_fresh_token(session):
 
     assert session.request.call_count == 2
     assert session.request.call_args.kwargs['headers']['Authorization'] == 'Bearer token-2'
+
+def test_redirect_is_not_followed_and_raises(session):
+    response = _response(status_code=302)
+    response.headers = {'Location': 'http://kc/auth'}
+    session.request.return_value = response
+    client = CronistClient(CronistConfig(), 'sae-1', session=session)
+
+    with pytest.raises(CronistRequestError, match='redirected to http://kc/auth'):
+        client.get_desired_state()
+    assert session.request.call_args.kwargs['allow_redirects'] is False
+
+def test_forbidden_raises(session):
+    session.post.return_value = _token_response('token-1')
+    session.request.return_value = _response(status_code=403)
+    client = CronistClient(_auth_config(), 'sae-1', session=session)
+
+    with pytest.raises(CronistRequestError, match='403'):
+        client.get_desired_state()
+
+def test_token_error_includes_keycloak_description(session):
+    session.post.return_value = _response(status_code=401, json={
+        'error': 'unauthorized_client', 'error_description': 'Invalid client or Invalid client credentials'})
+    client = CronistClient(_auth_config(), 'sae-1', session=session)
+
+    with pytest.raises(TokenRequestError, match='http://kc/token failed with HTTP 401: unauthorized_client .*Invalid client credentials'):
+        client.get_desired_state()
+    session.request.assert_not_called()
+    assert session.post.call_args.kwargs['data']['client_secret'] == 'secret'
+
+def test_cronist_connection_error_names_cronist(session):
+    session.post.return_value = _token_response('token-1')
+    session.request.side_effect = requests.ConnectionError('refused')
+    client = CronistClient(_auth_config(), 'sae-1', session=session)
+
+    with pytest.raises(CronistRequestError, match='cronist request PUT .*/observed-state failed: refused'):
+        client.put_observed_state(SaeObservedState(sae_id='sae-1', instance_id='instance-1'))
+
+def test_token_connection_error_names_token_request(session):
+    session.post.side_effect = requests.ConnectionError('refused')
+    client = CronistClient(_auth_config(), 'sae-1', session=session)
+
+    with pytest.raises(TokenRequestError, match='Token request to http://kc/token failed: refused'):
+        client.get_desired_state()
+
+def test_token_error_without_oauth2_body_uses_reason(session):
+    response = _response(status_code=502)
+    response.json.side_effect = ValueError('no json')
+    session.post.return_value = response
+    client = CronistClient(_auth_config(), 'sae-1', session=session)
+
+    with pytest.raises(TokenRequestError, match='HTTP 502: Reason'):
+        client.get_desired_state()

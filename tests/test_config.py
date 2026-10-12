@@ -34,3 +34,10 @@ def test_complete_config():
 def test_sync_interval_must_be_positive():
     with pytest.raises(ValidationError):
         CronistConfig(sync_interval=0)
+
+def test_client_secret_is_masked():
+    config = CronistSourceConfig(sae_id="sae-1", stream_id="stream1", cronist=CronistConfig(
+        auth=AuthConfig(token_url="http://kc/token", client_id="sae", client_secret="secret")))
+
+    assert config.cronist.auth.client_secret.get_secret_value() == "secret"
+    assert "secret" not in config.model_dump_json().replace("client_secret", "")

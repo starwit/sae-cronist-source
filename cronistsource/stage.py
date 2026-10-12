@@ -41,7 +41,7 @@ def run_stage():
 
     start_http_server(CONFIG.prometheus_port)
 
-    logger.info(f'Starting cronist source stage. Config: {CONFIG.model_dump_json(indent=2, exclude={"cronist": {"auth": {"client_secret"}}})}')
+    logger.info(f'Starting cronist source stage. Config: {CONFIG.model_dump_json(indent=2)}')
 
     client = CronistClient(CONFIG.cronist, CONFIG.sae_id)
     reconciler = Reconciler(CONFIG.sae_id, lambda desired: PlaybackTask(desired, CONFIG))

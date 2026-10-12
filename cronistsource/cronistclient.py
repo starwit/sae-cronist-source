@@ -55,6 +55,14 @@ class SaeObservedState(_CamelCaseModel):
     message: Optional[str] = None
 
 
+class TokenRequestError(Exception):
+    '''Fetching a bearer token from the identity provider (Keycloak) failed.'''
+
+
+class CronistRequestError(Exception):
+    '''A request to the cronist API failed.'''
+
+
 class TokenProvider:
     '''Fetches and caches a bearer token via the OAuth2 client credentials grant.'''
 
@@ -74,17 +82,34 @@ class TokenProvider:
         self._token = None
 
     def _fetch(self) -> None:
-        response = self._session.post(self._config.token_url, timeout=self._timeout, data={
-            'grant_type': 'client_credentials',
-            'client_id': self._config.client_id,
-            'client_secret': self._config.client_secret,
-        })
-        response.raise_for_status()
-        body = response.json()
-        self._token = body['access_token']
+        url = self._config.token_url
+        try:
+            response = self._session.post(url, timeout=self._timeout, data={
+                'grant_type': 'client_credentials',
+                'client_id': self._config.client_id,
+                'client_secret': self._config.client_secret.get_secret_value(),
+            })
+        except requests.RequestException as e:
+            raise TokenRequestError(f'Token request to {url} failed: {e}') from e
+        if response.status_code >= 400:
+            raise TokenRequestError(f'Token request to {url} failed with HTTP {response.status_code}: {_oauth2_error(response)}')
+        try:
+            body = response.json()
+            self._token = body['access_token']
+        except (ValueError, KeyError, TypeError) as e:
+            raise TokenRequestError(f'Token request to {url} returned no access token: {e!r}') from e
         expires_in = float(body.get('expires_in', 60))
         self._expires_at = time.monotonic() + max(0.0, expires_in - TOKEN_EXPIRY_MARGIN_S)
         logger.debug('Fetched access token, expires in %.0fs', expires_in)
+
+
+def _oauth2_error(response: requests.Response) -> str:
+    '''Keycloak's OAuth2 error (e.g. invalid_client), falling back to the HTTP reason if the body is not one.'''
+    try:
+        body = response.json()
+        return f"{body['error']} ({body.get('error_description', '')})"
+    except (ValueError, KeyError, TypeError):
+        return str(response.reason)
 
 
 class CronistClient:
@@ -106,16 +131,27 @@ class CronistClient:
         url = f'{self._base_url}/api/sae/{self._sae_id}/{resource}'
         headers = dict(headers or {})
 
-        response = self._send(method, url, headers, **kwargs)
-        if response.status_code == 401 and self._tokens is not None:
-            # The token may have been revoked or the auth server restarted; retry once with a fresh one.
-            self._tokens.invalidate()
+        try:
             response = self._send(method, url, headers, **kwargs)
+            if response.status_code == 401 and self._tokens is not None:
+                # The token may have been revoked or the auth server restarted; retry once with a fresh one.
+                self._tokens.invalidate()
+                response = self._send(method, url, headers, **kwargs)
+        except requests.RequestException as e:
+            raise CronistRequestError(f'cronist request {method} {url} failed: {e}') from e
 
-        response.raise_for_status()
+        if 300 <= response.status_code < 400:
+            # cronist also does oauth2Login, so it redirects requests without a (valid) bearer token to the login page
+            raise CronistRequestError(f'cronist request {method} {url} was redirected to {response.headers.get("Location")} '
+                                      '(missing or rejected credentials? check cronist.auth)')
+        if response.status_code == 403:
+            raise CronistRequestError(f'cronist request {method} {url} was denied (HTTP 403). '
+                                      'Does the client have the realm role `sae`?')
+        if response.status_code >= 400:
+            raise CronistRequestError(f'cronist request {method} {url} failed with HTTP {response.status_code} {response.reason}')
         return response
 
     def _send(self, method: str, url: str, headers: dict, **kwargs) -> requests.Response:
         if self._tokens is not None:
             headers['Authorization'] = f'Bearer {self._tokens.get()}'
-        return self._session.request(method, url, headers=headers, timeout=self._timeout, **kwargs)
+        return self._session.request(method, url, headers=headers, timeout=self._timeout, allow_redirects=False, **kwargs)

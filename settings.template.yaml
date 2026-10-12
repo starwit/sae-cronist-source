@@ -9,6 +9,7 @@ cronist:
   request_timeout: 5.0
   # Only needed if cronist runs with the `auth` profile
   # auth:
+  #   # Same Keycloak hostname as cronist's issuer-uri, e.g. https://auth.example.com/realms/cronist/protocol/openid-connect/token
   #   token_url: http://localhost:8080/realms/cronist/protocol/openid-connect/token
   #   client_id: sae
   #   client_secret: secret

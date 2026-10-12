@@ -27,6 +27,10 @@ For each task the stage:
 See [settings.template.yaml](settings.template.yaml). Settings can also be given as env vars, e.g. `CRONIST__BASE_URL`.
 
 - `cronist.auth`: set it if cronist runs with the `auth` profile. The stage then fetches a bearer token via OAuth2 client credentials, e.g. from a Keycloak client whose service account has the realm role `sae`.
+  - Keycloak client: client authentication on, service accounts enabled, realm role `sae` assigned to the service account.
+  - `token_url` must use the same Keycloak hostname as cronist's `spring.security.oauth2.resourceserver.jwt.issuer-uri` (unless Keycloak's hostname is fixed via `KC_HOSTNAME`). Otherwise the token's `iss` claim does not match and cronist rejects every request with 401.
+  - Without a token cronist redirects to its login page. The stage does not follow the redirect and logs it as an error.
+- TLS: certificates are verified against the [certifi](https://pypi.org/project/certifi/) CA bundle, not the OS trust store. For a private CA, set `REQUESTS_CA_BUNDLE=/path/to/ca.pem` (this also applies to the video downloads).
 - `redis.stream_maxlen` / `redis.backpressure.threshold`: backpressure only re-checks consumer lag every `monitor_interval`, so frames published in between can overshoot the threshold. Keep `stream_maxlen - threshold` well above `publish rate x monitor_interval`, otherwise unread frames get trimmed.
 - `redis.backpressure.fail_open_timeout`: if no consumer is attached to the `visionlib-default-group` consumer group for this long, publishing continues and frames may be lost.
 
@@ -36,3 +40,12 @@ poetry install
 poetry run pytest
 cp settings.template.yaml settings.yaml && poetry run python main.py
 ```
+
+## Changelog
+
+### 0.2.1
+- Clearer auth/request error logs (Keycloak vs. cronist), client secret masked
+- Documented Keycloak/TLS setup
+
+### 0.2.0
+- Initial release

@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from pydantic import BaseModel, DirectoryPath, Field
+from pydantic import BaseModel, DirectoryPath, Field, SecretStr
 from pydantic_settings import (BaseSettings, SettingsConfigDict,
                                YamlConfigSettingsSource)
 from typing_extensions import Annotated
@@ -12,7 +12,7 @@ class AuthConfig(BaseModel):
     '''OAuth2 client credentials, e.g. a Keycloak client whose service account has the realm role `sae`.'''
     token_url: str
     client_id: str
-    client_secret: str
+    client_secret: SecretStr
 
 class CronistConfig(BaseModel):
     base_url: str = 'http://localhost:8081/cronist'
