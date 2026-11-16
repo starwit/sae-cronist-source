@@ -14,7 +14,7 @@ from visionlib.pipeline import ValkeyPublisher
 from .config import CronistSourceConfig, RedisConfig
 from .cronistclient import PlaybackStatus, SaeDesiredState
 from .encoding import build_encoder
-from .frames import check_frame_timing, iter_frames
+from .frames import RangePlan, check_frame_timing, describe_range, iter_frames, plan_range
 from .saemessage import to_sae_message
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,14 @@ PUBLISH_DURATION = Histogram('cronist_source_publish_duration_seconds',
                              buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60))
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_PROGRESS_INTERVAL_S = 10.0
+
+
+def _content_length(response: requests.Response) -> Optional[int]:
+    try:
+        return int(response.headers['Content-Length'])
+    except (KeyError, TypeError, ValueError):
+        return None   # e.g. chunked transfer encoding
 
 
 class TaskStopped(Exception):
@@ -53,7 +61,8 @@ def _reset_stream(config: RedisConfig, stream_key: str) -> None:
 
 
 class PlaybackTask(threading.Thread):
-    '''Plays one task: downloads the video, decodes it and publishes every frame with backpressure.
+    '''Plays one task: downloads the video, decodes it and publishes every frame (or every frame of the
+    requested range) with backpressure.
 
     The control loop reads `status`, `processed_frames` and `message` while the task runs. These are
     plain attribute assignments, which are atomic under the GIL.
@@ -71,6 +80,8 @@ class PlaybackTask(threading.Thread):
 
         self._video_url = desired.video_url
         self._video_start = desired.video_start
+        self._offset_us = desired.playback_offset_micros
+        self._duration_us = desired.playback_duration_micros
         self._config = config
         self._stop_event = threading.Event()
 
@@ -81,8 +92,16 @@ class PlaybackTask(threading.Thread):
     def stopped(self) -> bool:
         return self._stop_event.is_set()
 
+    @property
+    def plays_range(self) -> bool:
+        return self._offset_us is not None or self._duration_us is not None
+
     def run(self) -> None:
-        logger.info('Starting task %s (video %s)', self.task_id, self.video_id)
+        if self.plays_range:
+            logger.info('Starting task %s (video %s, %s)', self.task_id, self.video_id,
+                        describe_range(self._offset_us, self._duration_us))
+        else:
+            logger.info('Starting task %s (video %s, whole video)', self.task_id, self.video_id)
         video_path = None
         try:
             if not self._video_url:
@@ -90,6 +109,10 @@ class PlaybackTask(threading.Thread):
             if self._video_start is None:
                 # Never guess frame times: they would look plausible downstream but be wrong.
                 raise ValueError('videoStart missing')
+            if self._offset_us is not None and self._offset_us < 0:
+                raise ValueError(f'playbackOffsetMicros must not be negative, got {self._offset_us}')
+            if self._duration_us is not None and self._duration_us <= 0:
+                raise ValueError(f'playbackDurationMicros must be positive, got {self._duration_us}')
             start_epoch_ms = round(self._video_start.timestamp() * 1000)
 
             self.message = 'Downloading video'
@@ -97,10 +120,15 @@ class PlaybackTask(threading.Thread):
 
             # Reject videos without usable frame times before feeding any of their frames downstream
             self.message = 'Checking video'
-            self.total_frames = check_frame_timing(video_path, self._config.source.target_fps)
+            plan = None
+            if self.plays_range:
+                plan = plan_range(video_path, self._offset_us or 0, self._duration_us, self._config.source.target_fps)
+                self.total_frames = plan.total_frames
+            else:
+                self.total_frames = check_frame_timing(video_path, self._config.source.target_fps)
 
             self.message = None
-            self._publish_frames(video_path, start_epoch_ms)
+            self._publish_frames(video_path, start_epoch_ms, plan)
 
             self.status = PlaybackStatus.FINISHED
             logger.info('Finished task %s: published %d frames', self.task_id, self.processed_frames)
@@ -133,12 +161,19 @@ class PlaybackTask(threading.Thread):
             with os.fdopen(fd, 'wb') as file, \
                     requests.get(self._video_url, stream=True, timeout=self._config.source.download_timeout) as response:
                 response.raise_for_status()
+                total = _content_length(response)
+                next_progress_log = started + DOWNLOAD_PROGRESS_INTERVAL_S
                 for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
                     if self.stopped:
                         raise TaskStopped()
                     file.write(chunk)
                     size += len(chunk)
                     DOWNLOAD_BYTES.inc(len(chunk))
+
+                    now = time.perf_counter()
+                    if now >= next_progress_log:
+                        next_progress_log = now + DOWNLOAD_PROGRESS_INTERVAL_S
+                        self._log_download_progress(size, total, now - started)
         except BaseException:
             path.unlink(missing_ok=True)
             raise
@@ -148,7 +183,17 @@ class PlaybackTask(threading.Thread):
         logger.info('Downloaded video %s (%.1f MB) in %.1fs', self.video_id, size / 1024 / 1024, elapsed)
         return path
 
-    def _publish_frames(self, video_path: Path, start_epoch_ms: int) -> None:
+    def _log_download_progress(self, size: int, total: Optional[int], elapsed: float) -> None:
+        elapsed = max(elapsed, 1e-6)
+        rate = size / elapsed / 1024 / 1024
+        if total:
+            remaining_s = (total - size) / (size / elapsed)
+            logger.info('Downloading video %s: %.1f of %.1f MB (%.0f%%), %.1f MB/s, about %.0fs left', self.video_id,
+                        size / 1024 / 1024, total / 1024 / 1024, 100 * size / total, rate, remaining_s)
+        else:
+            logger.info('Downloading video %s: %.1f MB, %.1f MB/s', self.video_id, size / 1024 / 1024, rate)
+
+    def _publish_frames(self, video_path: Path, start_epoch_ms: int, plan: Optional[RangePlan] = None) -> None:
         redis = self._config.redis
         stream_key = self._config.output_stream_key
         encoding = self._config.source.encoding
@@ -171,7 +216,8 @@ class PlaybackTask(threading.Thread):
 
         with publisher as publish:
             for frame in iter_frames(video_path, start_epoch_ms, scale_width=encoding.scale_width,
-                                     target_fps=self._config.source.target_fps, stop_event=self._stop_event):
+                                     target_fps=self._config.source.target_fps, stop_event=self._stop_event,
+                                     plan=plan):
                 proto_data = to_sae_message(
                     source_id=self._config.stream_id,
                     timestamp_utc_ms=frame.timestamp_utc_ms,

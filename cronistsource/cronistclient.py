@@ -41,6 +41,11 @@ class SaeDesiredState(_CamelCaseModel):
     video_id: Optional[str] = None
     video_url: Optional[str] = None
     video_start: Optional[AwareDatetime] = None
+    # Optional range of the video to play, relative to the PTS of its first frame. Missing or None
+    # means from the start / until the end. Not validated here, so a bad value fails the task
+    # instead of breaking polling.
+    playback_offset_micros: Optional[int] = None
+    playback_duration_micros: Optional[int] = None
 
 
 class SaeObservedState(_CamelCaseModel):
