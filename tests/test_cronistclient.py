@@ -40,6 +40,35 @@ def test_get_desired_state(session):
     assert desired.task_id == 't1'
     assert desired.video_url == 'http://s3/video.mp4'
     assert desired.video_start == datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    # Older cronist versions do not send a range
+    assert desired.playback_offset_micros is None
+    assert desired.playback_duration_micros is None
+
+def test_get_desired_state_with_range(session):
+    session.request.return_value = _response(json={
+        'saeId': 'sae-1', 'instanceId': 'instance-1', 'generation': 3, 'taskId': 't1', 'videoId': 'v1',
+        'videoUrl': 'http://s3/video.mp4', 'videoStart': '2026-01-01T00:00:00Z',
+        'playbackOffsetMicros': 43_200_000_000, 'playbackDurationMicros': 1_800_000_000,
+    })
+    client = CronistClient(CronistConfig(), 'sae-1', session=session)
+
+    desired = client.get_desired_state()
+
+    assert desired.playback_offset_micros == 43_200_000_000
+    assert desired.playback_duration_micros == 1_800_000_000
+
+def test_get_desired_state_with_null_range(session):
+    session.request.return_value = _response(json={
+        'saeId': 'sae-1', 'instanceId': 'instance-1', 'generation': 3, 'taskId': 't1', 'videoId': 'v1',
+        'videoUrl': 'http://s3/video.mp4', 'videoStart': '2026-01-01T00:00:00Z',
+        'playbackOffsetMicros': None, 'playbackDurationMicros': None,
+    })
+    client = CronistClient(CronistConfig(), 'sae-1', session=session)
+
+    desired = client.get_desired_state()
+
+    assert desired.playback_offset_micros is None
+    assert desired.playback_duration_micros is None
 
 def test_get_idle_desired_state(session):
     session.request.return_value = _response(json={
