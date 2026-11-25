@@ -1,0 +1,91 @@
+{{- $imageRepo := required "image repository for sae-cronist-source is required" .Values.image.repository }}
+{{- $imageTag := required "image tag for sae-cronist-source is required" (.Values.image.tag | default .Chart.AppVersion) }}
+{{- $_ := required "settingsYaml.sae_id is required" .Values.settingsYaml.sae_id }}
+{{- $_ := required "settingsYaml.stream_id is required" .Values.settingsYaml.stream_id }}
+{{- $_ := required "settingsYaml.cronist.base_url is required" (.Values.settingsYaml.cronist | default dict).base_url }}
+{{- $redis := .Values.settingsYaml.redis | default dict }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "sae-cronist-source.fullname" . }}
+  labels:
+    {{- include "sae-cronist-source.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cronist-source
+spec:
+  # Exactly one instance per sae_id: cronist binds a task to the instance it was assigned to,
+  # a second (or overlapping) instance would fight over the task and the output stream.
+  # A StatefulSet never runs two pods of the same ordinal at once, also not during updates.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "sae-cronist-source.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: cronist-source
+  template:
+    metadata:
+      annotations:
+        sae.starwit.de/stage: cronist-source
+        sae.starwit.de/config-checksum: {{ include (print .Template.BasePath "/cronist-source.configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "sae-cronist-source.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: cronist-source
+    spec:
+      serviceAccountName: {{ include "sae-cronist-source.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: wait-for-valkey
+          image: valkey/valkey:7.2.6-alpine
+          command: ["sh", "-c", "while ! redis-cli -h {{ $redis.host | default "localhost" }} -p {{ $redis.port | default 6379 }} ping ; do echo \"$(date -Iseconds) - still waiting for valkey\"; sleep 1; done"]
+      containers:
+        - name: cronist-source
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ $imageRepo }}:{{ $imageTag }}"
+          imagePullPolicy: IfNotPresent
+          {{- if or .Values.authClientSecret.existingSecret .Values.extraEnv }}
+          env:
+            {{- with .Values.authClientSecret.existingSecret }}
+            - name: CRONIST__AUTH__CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.authClientSecret.key | default "client-secret" }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - name: prometheus
+              containerPort: {{ .Values.settingsYaml.prometheus_port | default 8000 }}
+          volumeMounts:
+            - name: config
+              mountPath: /code/settings.yaml
+              subPath: settings.yaml
+            - name: downloads
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "sae-cronist-source.fullname" . }}-config
+        - name: downloads
+          {{- with .Values.downloadVolume.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

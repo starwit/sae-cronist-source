@@ -24,6 +24,8 @@ jobs:
   create-release:
     name: create new release
     runs-on: [self-hosted, linux, X64]
+    outputs:
+      version: ${{ steps.release.outputs.version }}
     container:
       image: starwitorg/debian-packaging:0.0.3
       volumes:
@@ -65,9 +67,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create github release
+        id: release
         run: | 
-          APP_VERSION=$(cat pyproject.toml | grep "version" | head -1 | cut -d'=' -f2 | xargs echo -n) 
-          gh release create $APP_VERSION -F README.md --title "${APP_VERSION}" --target $(git branch --show-current)
+          APP_VERSION=$(poetry version -s)
+          gh release create $APP_VERSION -F README.md --title "${APP_VERSION}" --target $(git rev-parse HEAD)
+          echo "version=${APP_VERSION}" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -75,20 +79,14 @@ jobs:
     name: "Build and publish docker"
     needs: create-release
     runs-on: [self-hosted, linux, X64]
+    env:
+      APP_VERSION: ${{ needs.create-release.outputs.version }}
     
     steps:
-      - name: Checkout
+      - name: Checkout release tag
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Checkout latest release tag
-        run: |
-          LATEST_TAG=$(git describe --tags `git rev-list --tags --max-count=1`)
-          git checkout $LATEST_TAG
-          echo "LATEST_TAG=${LATEST_TAG}" >> $GITHUB_ENV
-          APP_VERSION=$(cat pyproject.toml | grep "version" | head -1 | cut -d'=' -f2 | xargs echo -n) 
-          echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_ENV
+          ref: refs/tags/${{ env.APP_VERSION }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -101,7 +99,6 @@ jobs:
 
       - name: Build and push
         uses: docker/build-push-action@v5
-        if: env.APP_VERSION == env.LATEST_TAG
         with:
           context: .
           file: ./Dockerfile
@@ -109,3 +106,30 @@ jobs:
           provenance: mode=max
           push: true
           tags: ${{ env.DOCKERHUB_ORG }}/${{ env.IMAGE_NAME }}:${{ env.APP_VERSION }}
+          
+  publish_helm:
+    name: "Publish helm chart"
+    needs: create-release
+    runs-on: [self-hosted, linux, X64]
+    env:
+      APP_VERSION: ${{ needs.create-release.outputs.version }}
+
+    steps:
+    - name: Checkout release tag
+      uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.APP_VERSION }}
+
+    - name: get helm
+      uses: azure/setup-helm@v4
+
+    - name: run helm package
+      working-directory: deployment/helm
+      run: helm package . --version $APP_VERSION --app-version $APP_VERSION
+
+    - name: login to Helm registry
+      run: helm registry login registry-1.docker.io -u ${{ env.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: run helm push
+      working-directory: deployment/helm
+      run: helm push ${{ env.IMAGE_NAME }}-chart-$APP_VERSION.tgz oci://registry-1.docker.io/${{ env.DOCKERHUB_ORG }}

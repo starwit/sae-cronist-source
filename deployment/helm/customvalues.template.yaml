@@ -1,0 +1,44 @@
+image:
+  repository: starwitorg/sae-cronist-source
+  # tag: ""                                 # Defaults to the chart's appVersion
+
+authClientSecret:                           # Only needed if cronist runs with the `auth` profile (see settingsYaml.cronist.auth)
+  existingSecret: ""                        # Name of an existing Secret holding the OAuth2 client secret (passed as env var CRONIST__AUTH__CLIENT_SECRET)
+  key: client-secret                        # Key within that Secret
+
+downloadVolume:
+  sizeLimit: ""                             # Videos are downloaded to an emptyDir at /tmp, which must hold the largest video (e.g. 20Gi). Empty means no limit.
+
+settingsYaml:                               # Everything below this is passed as content of the settings.yaml (notice snake_case vs camelCase)
+  log_level: INFO                           # Options: ERROR, WARNING, INFO, DEBUG
+  sae_id: sae-1                             # Id this SAE reports to cronist as (must be unique per cronist)
+  stream_id: stream1                        # Output stream suffix and VideoFrame.source_id
+  cronist:
+    base_url: https://cronist.example.com/cronist
+    sync_interval: 2.0                      # Must stay well below cronist's `sae.state-expiry` (default 10s)
+    request_timeout: 5.0
+    # auth:                                 # Only needed if cronist runs with the `auth` profile
+    #   token_url: https://auth.example.com/realms/cronist/protocol/openid-connect/token   # Same Keycloak hostname as cronist's issuer-uri
+    #   client_id: sae                      # Client secret: see authClientSecret above
+  redis:
+    host: sae-valkey                        # Valkey service of the SAE chart (<sae-release-name>-valkey)
+    port: 6379
+    output_stream_prefix: cronistsource     # Frames are written to '{output_stream_prefix}:{stream_id}', i.e. the next stage must read from there
+    stream_maxlen: 200
+    reset_stream_on_task_start: true
+    # backpressure:
+    #   threshold: 100                      # Defaults to stream_maxlen / 2
+    #   fail_open_timeout: 30.0             # Keep publishing (and possibly lose frames) if no consumer is attached for this long
+  source:
+    # target_fps: 10                        # Default: all frames of the video
+    encoding:
+      jpeg_quality: 90
+      scale_width: 0                        # 0 = original size
+    download_timeout: 30.0
+  prometheus_port: 8000
+
+# extraEnv:                                 # E.g. for a private CA (mount the CA bundle yourself)
+#   - name: REQUESTS_CA_BUNDLE
+#     value: /certs/ca.pem
+
+resources: {}                               # Standard k8s container resources

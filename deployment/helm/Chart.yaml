@@ -1,0 +1,10 @@
+apiVersion: v2
+name: sae-cronist-source-chart
+description: An instance of the SAE cronist-source stage (plays recorded videos assigned by cronist into an SAE)
+
+type: application
+
+# Chart version and appVersion are both overwritten with the version from pyproject.toml on release
+# (see .github/workflows/create-release.yaml), i.e. chart and image are always released together.
+version: 0.3.0
+appVersion: "0.3.0"

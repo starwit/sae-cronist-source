@@ -1,0 +1,55 @@
+nameOverride: "sae-cronist-source"            # keeps resource names independent of the chart name
+fullnameOverride: ""
+
+# extraImagePullSecrets:
+#   - name: extra-pull-secret
+
+image:
+  repository: starwitorg/sae-cronist-source
+  # tag: ""                                 # defaults to the chart's appVersion
+
+# Client secret for settingsYaml.cronist.auth, read from an existing Secret and passed as env var CRONIST__AUTH__CLIENT_SECRET.
+# Preferred over settingsYaml.cronist.auth.client_secret, which ends up in a ConfigMap.
+authClientSecret:
+  existingSecret: ""
+  key: client-secret
+
+# Videos are downloaded to /tmp (emptyDir) before playback and deleted afterwards. Must hold the largest video.
+downloadVolume:
+  sizeLimit: ""                             # e.g. 20Gi, empty means no limit (node ephemeral storage)
+
+# Everything below this is passed as content of the settings.yaml (see settings.template.yaml for options)
+settingsYaml:
+  log_level: INFO
+  sae_id: sae-1
+  stream_id: stream1
+  cronist:
+    base_url: ""                            # required
+    sync_interval: 2.0
+    request_timeout: 5.0
+  redis:
+    host: sae-valkey
+    port: 6379
+    output_stream_prefix: cronistsource
+    stream_maxlen: 200
+    reset_stream_on_task_start: true
+  source:
+    encoding:
+      jpeg_quality: 90
+      scale_width: 0
+    download_timeout: 30.0
+  prometheus_port: 8000
+
+extraEnv: []
+
+resources: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+nodeSelector: {}
+
+affinity: {}
+
+tolerations: []

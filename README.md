@@ -23,12 +23,18 @@ See [settings.template.yaml](settings.template.yaml). Settings can also be given
 - `redis.stream_maxlen` / `redis.backpressure.threshold`: backpressure only re-checks consumer lag every `monitor_interval`, so frames published in between can overshoot the threshold. Keep `stream_maxlen - threshold` well above `publish rate x monitor_interval`, otherwise unread frames get trimmed.
 - `redis.backpressure.fail_open_timeout`: if no consumer is attached to the `visionlib-default-group` consumer group for this long, publishing continues and frames may be lost.
 
+## Deployment
+A Helm chart is available at `oci://registry-1.docker.io/starwitorg/sae-cronist-source-chart`, see [deployment/helm](deployment/helm/README.md).
+
 ## Development
 ```bash
 poetry install
 poetry run pytest
 cp settings.template.yaml settings.yaml && poetry run python main.py
 ```
+
+### Release
+[Create release](.github/workflows/create-release.yaml) (manually triggered) bumps the version in pyproject.toml (patch, minor or major) and creates a GitHub release with tag, Docker image (`starwitorg/sae-cronist-source`) and Helm chart (`oci://registry-1.docker.io/starwitorg/sae-cronist-source-chart`), all with the same version.
 
 ## Technical details
 
@@ -71,6 +77,9 @@ The stage seeks to the last keyframe at or before the offset and decodes from th
 The whole video is downloaded before playback starts, also when only a range is played, because the presigned URL (cronist `s3.sae-url-validity`, default 30 min) may expire while backpressure stalls playback, and reconnecting would then fail mid-video. Even 24h videos are small enough to download in reasonable time, and for a range only the decoding is limited to the range (see [Playing a range](#playing-a-range)).
 
 ## Changelog
+
+### 1.0.0
+- Helm chart (`oci://registry-1.docker.io/starwitorg/sae-cronist-source-chart`), released together with the image under the same version (see [deployment/helm](deployment/helm/README.md))
 
 ### 0.3.0
 - Play only a range of a video (`playbackOffsetMicros`/`playbackDurationMicros` in the desired state): seeks to the range instead of decoding the whole video
